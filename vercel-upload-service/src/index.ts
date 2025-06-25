@@ -10,6 +10,10 @@ import { createClient } from "redis";
 const publisher = createClient();
 publisher.connect();
 
+// Redis client for reading deployment status
+const subscriber = createClient();
+subscriber.connect();
+
 // Ensure output directory exists
 fs.mkdirSync("output", { recursive: true });
 
@@ -41,12 +45,32 @@ app.post("/deploy", async (req, res) => {
       await uploadFile(file.slice(__dirname.length + 1), file);
     });
 
+    // wait 5 seconds before queuing for build
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // mark status as uploaded before queuing for build
+    await publisher.hSet("status", id, "uploaded");
     // Publish the deployment ID to Redis
-    publisher.lPush("build-queue", id);
+    await publisher.lPush("build-queue", id);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Deployment failed" });
   }
+});
+
+// Status endpoint: return deployment status for a given ID
+app.get("/status", async (req, res) => {
+  const id = req.query.id as string;
+  if (!id) {
+    res.status(400).json({ error: "Missing 'id' query parameter" });
+    return;
+  }
+  const status = await subscriber.hGet("status", id);
+  if (status === null) {
+    res.status(404).json({ error: `No status found for ID: ${id}` });
+    return;
+  }
+  res.json({ status });
+  return;
 });
 
 // Start server
